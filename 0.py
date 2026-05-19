@@ -2,7 +2,23 @@ import discord
 import time
 import os
 import sys
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 
+# =====================================================================
+# 🌍 UPTIME ROBOT VE RENDER PORT HATASI İÇİN ARKA PLAN WEB SUNUCUSU
+# =====================================================================
+def run_dummy_server():
+    port = int(os.getenv("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    print(f"🌍 Uptime Web Sunucusu aktif edildi! Port: {port}")
+    server.serve_forever()
+
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+# =====================================================================
+# 🤖 DISCORD SELF-BOT MANTIĞI
+# =====================================================================
 class MySelfBot(discord.Client):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -10,7 +26,6 @@ class MySelfBot(discord.Client):
         # Render panelinden TARGET_ID verisini alıyoruz
         target_ids_str = os.getenv("TARGET_ID", "")
         
-        # Gelen metni virgüllere göre bölüp sayısal ID listesine çeviriyoruz
         self.hedef_kullanicilar = []
         if target_ids_str:
             try:
@@ -18,14 +33,13 @@ class MySelfBot(discord.Client):
             except Exception as e:
                 print(f"❌ TARGET_ID formatı hatalı! Hata: {e}")
         
-        # Render panelinden bildirim kanalını alıyoruz
         bildirim_str = os.getenv("SELF_BILDIRIM_KANALI")
         self.bildirim_kanal_id = int(bildirim_str) if (bildirim_str and bildirim_str.isdigit()) else None
         
-        # Son aktiflik (mesaj) zamanlarını tutan sözlük
+        # Kullanıcıların son mesaj attığı zamanı saklar
         self.son_mesaj_zamanlari = {}
         
-        # Sessizlik süresi: 3 dakika = 180 saniye
+        # Sessizlik kriteri: 3 dakika = 180 saniye
         self.sessizlik_suresi = 180 
 
     async def on_ready(self):
@@ -33,7 +47,7 @@ class MySelfBot(discord.Client):
         print(f"🤖 [{self.user.name}] Giriş Başarılı!")
         print(f"🎯 Toplam {len(self.hedef_kullanicilar)} kullanıcı dinleniyor.")
         print(f"📢 Bildirim Kanalı ID: {self.bildirim_kanal_id}")
-        print(f"⏱️ Sessizlik Süresi: 3 dakika (180 sn)")
+        print(f"⏱️ Beklenen Sessizlik: 3 Başlangıç/Sessizlik Süresi ({self.sessizlik_suresi} sn)")
         print("=========================================")
         
         if not self.hedef_kullanicilar or not self.bildirim_kanal_id:
@@ -41,20 +55,22 @@ class MySelfBot(discord.Client):
             sys.exit(1)
 
     async def on_message(self, message):
-        # Kendi mesajlarımızı es geçiyoruz
+        # Kendi hesabımızın mesajlarını es geçiyoruz
         if message.author.id == self.user.id:
             return
 
-        # Mesaj listedeki hedeflerden birine mi ait?
+        # Mesajı atan kişi hedeflenen kullanıcılardan biriyse
         if message.author.id in self.hedef_kullanicilar:
             simdiki_zaman = time.time()
             kullanici_id = message.author.id
             
-            # Bu kullanıcının daha önceki son mesaj zamanını al (Yoksa 0 kabul et)
-            son_aktiflik = self.son_mesaj_zamanlari.get(kullanici_id, 0)
+            # Kullanıcının son aktiflik zamanını kontrol et
+            son_aktiflik = self.son_mesaj_zamanlari.get(kullanici_id, None)
             
-            # Kritik Değişiklik: Son mesajın üzerinden 3 dakikalık sessizlik geçmiş mi?
-            if simdiki_zaman - son_aktiflik >= self.sessizlik_suresi:
+            # 💡 MANTIK: 
+            # Eğer son_aktiflik 'None' ise (yani kod çalıştığından beri İLK KEZ yazıyorsa)
+            # VEYA şu anki zaman ile son mesajı arasında 3 dakikadan fazla (180 sn) süre geçmişse BİLDİRİM AT.
+            if son_aktiflik is None or (simdiki_zaman - son_aktiflik >= self.sessizlik_suresi):
                 bildirim_kanali = self.get_channel(self.bildirim_kanal_id)
                 
                 if bildirim_kanali:
@@ -63,21 +79,21 @@ class MySelfBot(discord.Client):
                     
                     bildirim_metni = (
                         f"@everyone\n"
-                        f"**FERİŞTAHİNİ SİKTİĞİM MESAJ GÖNDERDİ XD**\n"
+                        f"🔔 **Hedef Kullanıcı Konuşma Başlattı!**\n"
                         f"**Kullanıcı:** {message.author.name} (`{message.author.id}`)\n"
                         f"**Konum:** {message.guild.name if message.guild else 'Özel Mesaj'} / {message.channel}\n"
                         f"**Mesaj Bağlantısı:** {mesaj_linki}\n"
-                        f"**İlk Mesaj İçeriği:** {message.content}"
+                        f"**Mesaj İçeriği:** {message.content}"
                     )
                     
                     await bildirim_kanali.send(bildirim_metni)
-                    print(f"✅ [{message.author.name}] 3 dk sonra ilk kez yazdı, bildirim gönderildi.")
+                    print(f"✅ [{message.author.name}] sessizlik sonrası yeni mesaj attı, bildirim gönderildi.")
             else:
-                # Kullanıcı henüz 3 dakika susmadığı için konuşmaya devam ediyor demektir
-                kalan_sessizlik = int(self.sessizlik_suresi - (simdiki_zaman - son_aktiflik))
-                print(f"⏳ [{message.author.name}] konuşmaya devam ediyor. Yeni bildirim tetiklenmesi için {kalan_sessizlik} sn sessiz kalmalı.")
+                # Kullanıcı 3 dakikalık arayı doldurmadan yazmaya devam ediyorsa konsola log düşer ama Discord'a mesaj gitmez
+                kalan_sure = int(self.sessizlik_suresi - (simdiki_zaman - son_aktiflik))
+                print(f"⏳ [{message.author.name}] yazmaya devam ediyor, bildirim tetiklenmedi. Yeni bildirim için {kalan_sure} sn susmalı.")
 
-            # Kişi her mesaj attığında son mesaj zamanını güncelliyoruz (Süre sıfırlanıyor)
+            # Kullanıcı her mesaj gönderdiğinde kronometreyi sıfırlıyoruz
             self.son_mesaj_zamanlari[kullanici_id] = simdiki_zaman
 
 # Render panelinden TOKEN verisini alıyoruz
